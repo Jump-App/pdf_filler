@@ -145,13 +145,31 @@ cargo run --example generate_fixture
 ## Releasing updates
 
 1. Update the version in `Cargo.toml`.
-2. Run the local checks:
+2. Regenerate and commit `Cargo.lock` if the version change or dependency resolution updates it.
+3. Run the local release checks:
 
 ```sh
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-3. Push a version tag such as `v0.1.2`.
-4. GitHub Actions builds the supported targets and uploads them to the matching GitHub Release.
+4. Commit the release prep to `main`.
+5. Push `main`.
+6. Create and push a matching version tag such as `v0.1.2`.
+7. GitHub Actions validates that the tag matches `Cargo.toml`, builds the supported targets, and uploads the binaries plus `checksums.txt` to the matching GitHub Release.
 
-Only version tags publish release assets. Branch pushes and pull requests only run CI.
+Important release rules:
+
+- release tags are immutable once pushed; do not retag a broken release
+- if a tagged release is bad, bump the crate version and publish a new tag
+- `Cargo.toml` and the release tag must match exactly
+- the release workflow builds with `cargo build --locked`, so `Cargo.lock` must be committed
+- only version tags publish release assets; branch pushes and pull requests only run CI
+
+After the workflow completes, verify the release contains:
+
+- `pdf_filler-x86_64-unknown-linux-gnu`
+- `pdf_filler-aarch64-apple-darwin`
+- `pdf_filler-x86_64-apple-darwin`
+- `checksums.txt`
