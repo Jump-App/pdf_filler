@@ -19,7 +19,7 @@ fn main() {
     let output_path = &args[3];
 
     let mut doc = lopdf::Document::load(template_path).unwrap_or_else(|e| {
-        eprintln!("Failed to load PDF '{}': {}", template_path, e);
+        eprintln!("Failed to load PDF '{template_path}': {e}");
         process::exit(1);
     });
 
@@ -27,20 +27,20 @@ fn main() {
     if env::var("PDF_DUMP_FIELDS").is_ok() {
         let field_names = fill::list_field_names(&doc);
         for name in &field_names {
-            println!("{}", name);
+            println!("{name}");
         }
         eprintln!("Found {} fields total", field_names.len());
         return;
     }
 
     let json_str = fs::read_to_string(json_path).unwrap_or_else(|e| {
-        eprintln!("Failed to read JSON file '{}': {}", json_path, e);
+        eprintln!("Failed to read JSON file '{json_path}': {e}");
         process::exit(1);
     });
 
     let raw: HashMap<String, serde_json::Value> =
         serde_json::from_str(&json_str).unwrap_or_else(|e| {
-            eprintln!("Failed to parse JSON: {}", e);
+            eprintln!("Failed to parse JSON: {e}");
             process::exit(1);
         });
 
@@ -63,7 +63,7 @@ fn main() {
     strip::strip_unfilled_dropdowns(&mut doc, &filled_keys);
 
     doc.save(output_path).unwrap_or_else(|e| {
-        eprintln!("Failed to save PDF '{}': {}", output_path, e);
+        eprintln!("Failed to save PDF '{output_path}': {e}");
         process::exit(1);
     });
 
