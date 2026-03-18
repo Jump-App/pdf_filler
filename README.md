@@ -23,6 +23,7 @@ Release assets follow this naming contract:
 - `pdf_filler-x86_64-unknown-linux-gnu`
 - `pdf_filler-aarch64-apple-darwin`
 - `pdf_filler-x86_64-apple-darwin`
+- `checksums.txt`
 
 Download URLs follow this shape:
 
@@ -36,6 +37,13 @@ Example:
 curl -L -o pdf_filler \
   https://github.com/<owner>/<repo>/releases/download/v0.1.0/pdf_filler-x86_64-unknown-linux-gnu
 chmod +x pdf_filler
+```
+
+Verify the download against `checksums.txt` from the same release:
+
+```sh
+curl -L -O https://github.com/<owner>/<repo>/releases/download/v0.1.0/checksums.txt
+sha256sum --check checksums.txt --ignore-missing
 ```
 
 ## Usage

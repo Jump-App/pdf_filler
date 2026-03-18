@@ -10,8 +10,33 @@ permissions:
   contents: write
 
 jobs:
+  validate:
+    name: Validate release metadata
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Verify tag matches Cargo.toml version
+        shell: bash
+        run: |
+          crate_version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)"
+          expected_tag="v${crate_version}"
+
+          if [[ -z "${crate_version}" ]]; then
+            echo "Could not read package version from Cargo.toml" >&2
+            exit 1
+          fi
+
+          if [[ "${GITHUB_REF_NAME}" != "${expected_tag}" ]]; then
+            echo "Tag ${GITHUB_REF_NAME} does not match Cargo.toml version ${crate_version}" >&2
+            exit 1
+          fi
+
   build:
     name: Build ${{ matrix.target }}
+    needs: validate
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -46,7 +71,34 @@ jobs:
         shell: bash
         run: cp target/${{ matrix.target }}/release/pdf_filler pdf_filler-${{ matrix.target }}
 
-      - name: Upload release asset
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pdf_filler-${{ matrix.target }}
+          path: pdf_filler-${{ matrix.target }}
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          pattern: pdf_filler-*
+          merge-multiple: true
+
+      - name: Generate checksums
+        shell: bash
+        working-directory: release-assets
+        run: sha256sum pdf_filler-* > checksums.txt
+
+      - name: Upload release assets
         uses: softprops/action-gh-release@v2
         with:
-          files: pdf_filler-${{ matrix.target }}
+          files: |
+            release-assets/pdf_filler-*
+            release-assets/checksums.txt
