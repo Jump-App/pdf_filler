@@ -35,14 +35,14 @@ Example:
 
 ```sh
 curl -L -o pdf_filler \
-  https://github.com/<owner>/<repo>/releases/download/v0.1.0/pdf_filler-x86_64-unknown-linux-gnu
+  https://github.com/<owner>/<repo>/releases/download/v0.1.1/pdf_filler-x86_64-unknown-linux-gnu
 chmod +x pdf_filler
 ```
 
 Verify the download against `checksums.txt` from the same release:
 
 ```sh
-curl -L -O https://github.com/<owner>/<repo>/releases/download/v0.1.0/checksums.txt
+curl -L -O https://github.com/<owner>/<repo>/releases/download/v0.1.1/checksums.txt
 sha256sum --check checksums.txt --ignore-missing
 ```
 
@@ -151,7 +151,7 @@ cargo run --example generate_fixture
 cargo test
 ```
 
-3. Push a version tag such as `v0.1.0`.
+3. Push a version tag such as `v0.1.1`.
 4. GitHub Actions builds the supported targets and uploads them to the matching GitHub Release.
 
 Only version tags publish release assets. Branch pushes and pull requests only run CI.
