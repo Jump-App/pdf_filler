@@ -138,6 +138,64 @@ fn e2e_wrong_args_exits_error() {
 }
 
 #[test]
+fn e2e_filled_fields_have_appearance_streams() {
+    let json = r#"{
+        "Name": "Jane Doe",
+        "State": "NY",
+        "Account.Number": "12345"
+    }"#;
+
+    let (output, tmp) = run_pdf_filler(json, &[]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        output.status.success(),
+        "binary should exit 0, stderr: {stderr}"
+    );
+
+    let output_path = tmp.path().join("output.pdf");
+    let doc = lopdf::Document::load(&output_path).expect("output PDF should be loadable");
+
+    // Check that filled text/choice fields have /AP → /N
+    let pages: Vec<lopdf::ObjectId> = doc.page_iter().collect();
+    let page = doc.get_object(pages[0]).unwrap().as_dict().unwrap();
+    let annots_obj = page.get(b"Annots").unwrap();
+    let annots = match annots_obj {
+        lopdf::Object::Array(arr) => arr.clone(),
+        lopdf::Object::Reference(id) => doc.get_object(*id).unwrap().as_array().unwrap().clone(),
+        _ => panic!("unexpected Annots type"),
+    };
+
+    let mut found_name = false;
+    for annot_ref in &annots {
+        if let Ok(id) = annot_ref.as_reference() {
+            if let Ok(obj) = doc.get_object(id) {
+                if let Ok(dict) = obj.as_dict() {
+                    if let Ok(lopdf::Object::String(bytes, _)) = dict.get(b"T") {
+                        let name = String::from_utf8_lossy(bytes);
+                        if name == "Name" {
+                            found_name = true;
+                            let ap = dict.get(b"AP").expect("Name field should have /AP");
+                            let ap_dict = ap.as_dict().expect("/AP should be a dict");
+                            let n = ap_dict.get(b"N").expect("/AP should have /N entry");
+                            let n_id = n.as_reference().expect("/AP /N should be a reference");
+                            let stream_obj =
+                                doc.get_object(n_id).expect("AP stream object should exist");
+                            assert!(
+                                stream_obj.as_stream().is_ok(),
+                                "/AP /N should reference a stream"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    assert!(found_name, "Name field should be found in annotations");
+}
+
+#[test]
 fn e2e_strips_unfilled_dropdown() {
     // Fill Name but NOT State — State's DV/V should be stripped
     let json = r#"{ "Name": "Alice" }"#;
