@@ -175,19 +175,12 @@ fn e2e_filled_fields_have_appearance_streams() {
                         let name = String::from_utf8_lossy(bytes);
                         if name == "Name" {
                             found_name = true;
-                            let ap = dict
-                                .get(b"AP")
-                                .expect("Name field should have /AP");
+                            let ap = dict.get(b"AP").expect("Name field should have /AP");
                             let ap_dict = ap.as_dict().expect("/AP should be a dict");
-                            let n = ap_dict
-                                .get(b"N")
-                                .expect("/AP should have /N entry");
-                            let n_id = n
-                                .as_reference()
-                                .expect("/AP /N should be a reference");
-                            let stream_obj = doc
-                                .get_object(n_id)
-                                .expect("AP stream object should exist");
+                            let n = ap_dict.get(b"N").expect("/AP should have /N entry");
+                            let n_id = n.as_reference().expect("/AP /N should be a reference");
+                            let stream_obj =
+                                doc.get_object(n_id).expect("AP stream object should exist");
                             assert!(
                                 stream_obj.as_stream().is_ok(),
                                 "/AP /N should reference a stream"

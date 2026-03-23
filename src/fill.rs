@@ -341,7 +341,11 @@ fn get_acroform_font_resource(doc: &Document, font_name: &str) -> Option<ObjectI
 }
 
 /// Try to find a font ObjectId from the field's existing /AP stream resources.
-fn find_font_in_existing_ap(doc: &Document, field_id: ObjectId, font_name: &str) -> Option<ObjectId> {
+fn find_font_in_existing_ap(
+    doc: &Document,
+    field_id: ObjectId,
+    font_name: &str,
+) -> Option<ObjectId> {
     let obj = doc.get_object(field_id).ok()?;
     let dict = obj.as_dict().ok()?;
     let ap_obj = dict.get(b"AP").ok()?;
@@ -375,7 +379,11 @@ fn find_font_in_existing_ap(doc: &Document, field_id: ObjectId, font_name: &str)
         _ => return None,
     };
 
-    font_dict.get(font_name.as_bytes()).ok()?.as_reference().ok()
+    font_dict
+        .get(font_name.as_bytes())
+        .ok()?
+        .as_reference()
+        .ok()
 }
 
 /// Generate an /AP appearance stream for a text or choice field.
@@ -404,9 +412,8 @@ fn generate_appearance_stream(doc: &mut Document, id: ObjectId, value: &str) {
     let y_offset = if y_offset < 0.0 { 2.0 } else { y_offset };
 
     let escaped = pdf_escape(value);
-    let content = format!(
-        "/Tx BMC\nBT\n{da}\n{x_offset:.2} {y_offset:.2} Td\n({escaped}) Tj\nET\nEMC"
-    );
+    let content =
+        format!("/Tx BMC\nBT\n{da}\n{x_offset:.2} {y_offset:.2} Td\n({escaped}) Tj\nET\nEMC");
 
     // Build resources dict with font reference
     let font_name = parse_font_name_from_da(&da);
@@ -422,16 +429,14 @@ fn generate_appearance_stream(doc: &mut Document, id: ObjectId, value: &str) {
             Object::Dictionary(Dictionary::from_iter(vec![
                 (b"Type".to_vec(), Object::Name(b"Font".to_vec())),
                 (b"Subtype".to_vec(), Object::Name(b"Type1".to_vec())),
-                (b"BaseFont".to_vec(), Object::Name(fname.as_bytes().to_vec())),
+                (
+                    b"BaseFont".to_vec(),
+                    Object::Name(fname.as_bytes().to_vec()),
+                ),
             ]))
         };
-        let font_entry = Dictionary::from_iter(vec![(
-            fname.as_bytes().to_vec(),
-            font_obj,
-        )]);
-        Dictionary::from_iter(vec![
-            (b"Font".to_vec(), Object::Dictionary(font_entry)),
-        ])
+        let font_entry = Dictionary::from_iter(vec![(fname.as_bytes().to_vec(), font_obj)]);
+        Dictionary::from_iter(vec![(b"Font".to_vec(), Object::Dictionary(font_entry))])
     } else {
         Dictionary::new()
     };
@@ -461,10 +466,7 @@ fn generate_appearance_stream(doc: &mut Document, id: ObjectId, value: &str) {
     // Set /AP on the field
     if let Ok(obj) = doc.get_object_mut(id) {
         if let Ok(dict) = obj.as_dict_mut() {
-            let ap_dict = Dictionary::from_iter(vec![(
-                b"N".to_vec(),
-                Object::Reference(ap_id),
-            )]);
+            let ap_dict = Dictionary::from_iter(vec![(b"N".to_vec(), Object::Reference(ap_id))]);
             dict.set("AP", Object::Dictionary(ap_dict));
         }
     }
