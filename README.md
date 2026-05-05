@@ -15,12 +15,14 @@ The binary is produced at `target/release/pdf_filler`.
 Prebuilt binaries are published on GitHub Releases for:
 
 - `x86_64-unknown-linux-gnu`
+- `aarch64-unknown-linux-gnu`
 - `aarch64-apple-darwin`
 - `x86_64-apple-darwin`
 
 Release assets follow this naming contract:
 
 - `pdf_filler-x86_64-unknown-linux-gnu`
+- `pdf_filler-aarch64-unknown-linux-gnu`
 - `pdf_filler-aarch64-apple-darwin`
 - `pdf_filler-x86_64-apple-darwin`
 - `checksums.txt`
@@ -170,6 +172,7 @@ Important release rules:
 After the workflow completes, verify the release contains:
 
 - `pdf_filler-x86_64-unknown-linux-gnu`
+- `pdf_filler-aarch64-unknown-linux-gnu`
 - `pdf_filler-aarch64-apple-darwin`
 - `pdf_filler-x86_64-apple-darwin`
 - `checksums.txt`
