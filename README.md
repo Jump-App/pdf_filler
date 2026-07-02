@@ -15,12 +15,14 @@ The binary is produced at `target/release/pdf_filler`.
 Prebuilt binaries are published on GitHub Releases for:
 
 - `x86_64-unknown-linux-gnu`
+- `aarch64-unknown-linux-gnu`
 - `aarch64-apple-darwin`
 - `x86_64-apple-darwin`
 
 Release assets follow this naming contract:
 
 - `pdf_filler-x86_64-unknown-linux-gnu`
+- `pdf_filler-aarch64-unknown-linux-gnu`
 - `pdf_filler-aarch64-apple-darwin`
 - `pdf_filler-x86_64-apple-darwin`
 - `checksums.txt`
@@ -145,8 +147,19 @@ cargo run --example generate_fixture
 ## Releasing updates
 
 1. Update the version in `Cargo.toml`.
-2. Regenerate and commit `Cargo.lock` if the version change or dependency resolution updates it.
-3. Run the local release checks:
+2. Refresh `Cargo.lock` so the package version there matches `Cargo.toml`:
+
+```sh
+cargo metadata --format-version 1 >/dev/null
+```
+
+3. Verify the lockfile is in sync with the same locked mode used by CI:
+
+```sh
+cargo metadata --locked --format-version 1 >/dev/null
+```
+
+4. Run the local release checks:
 
 ```sh
 cargo fmt --check
@@ -154,10 +167,10 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-4. Commit the release prep to `main`.
-5. Push `main`.
-6. Create and push a matching version tag such as `v0.1.2`.
-7. GitHub Actions validates that the tag matches `Cargo.toml`, builds the supported targets, and uploads the binaries plus `checksums.txt` to the matching GitHub Release.
+5. Commit the release prep to `main`, including `Cargo.lock`.
+6. Push `main`.
+7. Create and push a matching version tag such as `v0.1.2`.
+8. GitHub Actions validates that the tag matches `Cargo.toml`, builds the supported targets, and uploads the binaries plus `checksums.txt` to the matching GitHub Release.
 
 Important release rules:
 
@@ -170,6 +183,7 @@ Important release rules:
 After the workflow completes, verify the release contains:
 
 - `pdf_filler-x86_64-unknown-linux-gnu`
+- `pdf_filler-aarch64-unknown-linux-gnu`
 - `pdf_filler-aarch64-apple-darwin`
 - `pdf_filler-x86_64-apple-darwin`
 - `checksums.txt`

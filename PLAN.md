@@ -56,12 +56,14 @@ Optional:
 Each release should publish binaries for:
 
 - `x86_64-unknown-linux-gnu`
+- `aarch64-unknown-linux-gnu`
 - `aarch64-apple-darwin`
 - `x86_64-apple-darwin`
 
 Recommended asset names:
 
 - `pdf_filler-x86_64-unknown-linux-gnu`
+- `pdf_filler-aarch64-unknown-linux-gnu`
 - `pdf_filler-aarch64-apple-darwin`
 - `pdf_filler-x86_64-apple-darwin`
 
@@ -119,6 +121,7 @@ Responsibilities:
 Suggested matrix:
 
 - `ubuntu-latest` -> `x86_64-unknown-linux-gnu`
+- `ubuntu-24.04-arm` -> `aarch64-unknown-linux-gnu`
 - `macos-latest` -> `aarch64-apple-darwin`
 - `macos-15-intel` -> `x86_64-apple-darwin`
 
