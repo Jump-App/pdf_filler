@@ -43,10 +43,61 @@ pub fn fill_pdf(doc: &mut Document, data: &HashMap<String, String>) -> HashSet<S
         }
     }
 
-    // Remove NeedAppearances since we now provide proper /AP streams
-    remove_need_appearances(doc);
+    // Point every text/choice /DA at the standard Helvetica so Adobe's NeedAppearances
+    // regeneration never resolves the template's "ArialMT" (which has no valid font and
+    // triggers a "bad /BBox" warning).
+    normalize_text_das(doc);
+
+    // Keep NeedAppearances=true. This template is malformed — each field exists as two
+    // unlinked widgets (an off-page AcroForm entry and the on-page annotation) — and
+    // Adobe only renders it correctly by merging same-named widgets and rebuilding each
+    // field from its value on open, which NeedAppearances triggers. That rebuild is what
+    // resolves checkbox on/off state; dropping the flag left checkboxes blank in Adobe.
+    // It's safe to keep because we regenerate the /AP streams above, so viewers that
+    // ignore NeedAppearances (Preview/Chrome) still paint the correct values.
+    set_need_appearances(doc);
 
     filled
+}
+
+/// Rewrite the /DA of every text/choice widget that has its own /DA to the standard-14
+/// Helvetica ("/Helv"), preserving the font size. Kills all references to the template's
+/// "ArialMT", which has no valid font object and would make Adobe warn "bad /BBox".
+fn normalize_text_das(doc: &mut Document) {
+    let mut ids = collect_field_ids(doc);
+    ids.extend(collect_page_annotation_ids(doc));
+
+    for id in ids {
+        let is_text = matches!(get_field_type(doc, id).as_deref(), Some("Tx") | Some("Ch"));
+        // The field's own /DA (not inherited).
+        let own_da = doc
+            .get_object(id)
+            .ok()
+            .and_then(|o| o.as_dict().ok())
+            .and_then(|d| d.get(b"DA").ok())
+            .and_then(|o| pdf_string_to_rust(o).ok());
+        let own_da = match own_da {
+            Some(da) => da,
+            None => continue,
+        };
+        // Normalize every text/choice /DA, plus any /DA that references the template's
+        // invalid ArialMT (e.g. a pushbutton caption font).
+        if !is_text && !own_da.contains("ArialMT") {
+            continue;
+        }
+        let size = parse_font_size_from_da(&own_da).unwrap_or(0.0);
+        if let Ok(obj) = doc.get_object_mut(id) {
+            if let Ok(dict) = obj.as_dict_mut() {
+                dict.set(
+                    "DA",
+                    Object::String(
+                        format!("/Helv {size:.2} Tf 0 g").into_bytes(),
+                        StringFormat::Literal,
+                    ),
+                );
+            }
+        }
+    }
 }
 
 /// List all field names found in the PDF (AcroForm tree + page annotations).
@@ -62,7 +113,6 @@ pub fn list_field_names(doc: &Document) -> Vec<String> {
     names
 }
 
-#[cfg(test)]
 pub(crate) fn set_need_appearances(doc: &mut Document) {
     let catalog = doc.catalog().expect("No catalog found").clone();
 
@@ -171,6 +221,21 @@ pub(crate) fn get_field_name(doc: &Document, id: ObjectId) -> Option<String> {
     Some(parts.join("."))
 }
 
+/// Encode a field value as a PDF text string. ASCII stays a plain literal; anything
+/// else becomes UTF-16BE with a BOM so a programmatic reader decodes the exact value
+/// (a raw-UTF-8 literal would be misread as Latin-1, e.g. "José" -> "JosÃ©").
+fn pdf_text_string(value: &str) -> Object {
+    if value.is_ascii() {
+        Object::String(value.as_bytes().to_vec(), StringFormat::Literal)
+    } else {
+        let mut bytes = vec![0xFE, 0xFF];
+        for unit in value.encode_utf16() {
+            bytes.extend_from_slice(&unit.to_be_bytes());
+        }
+        Object::String(bytes, StringFormat::Hexadecimal)
+    }
+}
+
 pub(crate) fn set_field_value(doc: &mut Document, id: ObjectId, _name: &str, value: &str) {
     let field_type = get_field_type(doc, id);
 
@@ -178,20 +243,13 @@ pub(crate) fn set_field_value(doc: &mut Document, id: ObjectId, _name: &str, val
         if let Ok(dict) = obj.as_dict_mut() {
             match field_type.as_deref() {
                 Some("Btn") => {
+                    // Button on-states are name tokens (e.g. /Yes), always ASCII.
                     dict.set("V", Object::Name(value.as_bytes().to_vec()));
                     dict.set("AS", Object::Name(value.as_bytes().to_vec()));
                 }
-                Some("Ch") => {
-                    dict.set(
-                        "V",
-                        Object::String(value.as_bytes().to_vec(), StringFormat::Literal),
-                    );
-                }
+                // Text and choice: store the exact value as a PDF text string.
                 _ => {
-                    dict.set(
-                        "V",
-                        Object::String(value.as_bytes().to_vec(), StringFormat::Literal),
-                    );
+                    dict.set("V", pdf_text_string(value));
                 }
             }
         }
@@ -238,6 +296,26 @@ pub(crate) fn resolve_dict<'a>(
 }
 
 /// Escape special PDF string characters: \, (, )
+/// PDF text-field flag: multiline (bit 13).
+const FLAG_MULTILINE: i64 = 0x1000;
+
+/// Resolve a field's /Ff flags, inheriting from /Parent.
+fn get_field_flags(doc: &Document, id: ObjectId) -> i64 {
+    let mut current = Some(id);
+    while let Some(cid) = current {
+        let dict = match doc.get_object(cid).ok().and_then(|o| o.as_dict().ok()) {
+            Some(d) => d,
+            None => break,
+        };
+        if let Ok(Object::Integer(n)) = dict.get(b"Ff") {
+            return *n;
+        }
+        current = dict.get(b"Parent").ok().and_then(|p| p.as_reference().ok());
+    }
+    0
+}
+
+/// Escape special characters for a PDF literal string.
 fn pdf_escape(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     for c in value.chars() {
@@ -249,6 +327,34 @@ fn pdf_escape(value: &str) -> String {
         }
     }
     out
+}
+
+/// Greedy word-wrap into lines that fit `avail_width` at `font_size`, using an average
+/// glyph advance (no embedded metrics, so this is approximate). Splits on explicit
+/// newlines.
+fn wrap_text(value: &str, avail_width: f64, font_size: f64) -> Vec<String> {
+    let char_width = (0.5 * font_size).max(1.0);
+    let max_chars = ((avail_width / char_width).floor() as usize).max(1);
+
+    let mut lines = Vec::new();
+    for paragraph in value.split('\n') {
+        let mut current = String::new();
+        for word in paragraph.split_whitespace() {
+            // Wrap only at word boundaries — never split a word. A word longer than the
+            // line goes on its own line and overflows (clipped), so text is never altered.
+            if current.is_empty() {
+                current = word.to_string();
+            } else if current.chars().count() + 1 + word.chars().count() <= max_chars {
+                current.push(' ');
+                current.push_str(word);
+            } else {
+                lines.push(std::mem::take(&mut current));
+                current = word.to_string();
+            }
+        }
+        lines.push(current);
+    }
+    lines
 }
 
 /// Get the /DA (Default Appearance) string, walking up the parent chain,
@@ -303,19 +409,6 @@ fn get_field_rect(doc: &Document, id: ObjectId) -> Option<[f64; 4]> {
 }
 
 /// Parse font name from DA string. E.g. "/Helv 12 Tf 0 g" → "Helv"
-fn parse_font_name_from_da(da: &str) -> Option<String> {
-    for (i, token) in da.split_whitespace().enumerate() {
-        if token == "Tf" && i >= 2 {
-            let tokens: Vec<&str> = da.split_whitespace().collect();
-            let font_token = tokens[i - 2];
-            if let Some(name) = font_token.strip_prefix('/') {
-                return Some(name.to_string());
-            }
-        }
-    }
-    None
-}
-
 /// Parse font size from DA string. E.g. "/Helv 12 Tf 0 g" → 12.0
 fn parse_font_size_from_da(da: &str) -> Option<f64> {
     for (i, token) in da.split_whitespace().enumerate() {
@@ -325,65 +418,6 @@ fn parse_font_size_from_da(da: &str) -> Option<f64> {
         }
     }
     None
-}
-
-/// Get font resource ObjectId from AcroForm /DR for the given font name.
-fn get_acroform_font_resource(doc: &Document, font_name: &str) -> Option<ObjectId> {
-    let catalog = doc.catalog().ok()?.clone();
-    let acroform_ref = catalog.get(b"AcroForm").ok()?;
-    let acroform = resolve_dict(doc, acroform_ref)?;
-    let dr_obj = acroform.get(b"DR").ok()?;
-    let dr = resolve_dict(doc, dr_obj)?;
-    let font_obj = dr.get(b"Font").ok()?;
-    let font_dict = resolve_dict(doc, font_obj)?;
-    let entry = font_dict.get(font_name.as_bytes()).ok()?;
-    entry.as_reference().ok()
-}
-
-/// Try to find a font ObjectId from the field's existing /AP stream resources.
-fn find_font_in_existing_ap(
-    doc: &Document,
-    field_id: ObjectId,
-    font_name: &str,
-) -> Option<ObjectId> {
-    let obj = doc.get_object(field_id).ok()?;
-    let dict = obj.as_dict().ok()?;
-    let ap_obj = dict.get(b"AP").ok()?;
-
-    // /AP can be a dict or a reference to one
-    let ap_dict = match ap_obj {
-        Object::Dictionary(d) => d,
-        Object::Reference(id) => doc.get_object(*id).ok()?.as_dict().ok()?,
-        _ => return None,
-    };
-
-    // Get /N (normal appearance) — can be a stream or reference
-    let n_obj = ap_dict.get(b"N").ok()?;
-    let n_stream = match n_obj {
-        Object::Reference(id) => doc.get_object(*id).ok()?.as_stream().ok()?,
-        Object::Stream(s) => s,
-        _ => return None,
-    };
-
-    let resources = n_stream.dict.get(b"Resources").ok()?;
-    let res_dict = match resources {
-        Object::Dictionary(d) => d,
-        Object::Reference(id) => doc.get_object(*id).ok()?.as_dict().ok()?,
-        _ => return None,
-    };
-
-    let font_obj = res_dict.get(b"Font").ok()?;
-    let font_dict = match font_obj {
-        Object::Dictionary(d) => d,
-        Object::Reference(id) => doc.get_object(*id).ok()?.as_dict().ok()?,
-        _ => return None,
-    };
-
-    font_dict
-        .get(font_name.as_bytes())
-        .ok()?
-        .as_reference()
-        .ok()
 }
 
 /// Generate an /AP appearance stream for a text or choice field.
@@ -401,45 +435,61 @@ fn generate_appearance_stream(doc: &mut Document, id: ObjectId, value: &str) {
     let width = (rect[2] - rect[0]).abs();
     let height = (rect[3] - rect[1]).abs();
 
-    // Parse font info for positioning
     let font_size = parse_font_size_from_da(&da).unwrap_or(12.0);
-    // Use 0 auto-size: if font size is 0, pick a reasonable default
-    let effective_size = if font_size == 0.0 { 12.0 } else { font_size };
+    let effective_size = if font_size <= 0.0 { 12.0 } else { font_size };
 
-    // Position text with small offset from left and vertically centered
-    let x_offset = 2.0;
-    let y_offset = (height - effective_size) / 2.0;
-    let y_offset = if y_offset < 0.0 { 2.0 } else { y_offset };
+    let pad = 2.0;
+    // Multiline fields (or values with explicit newlines) wrap to the box width and
+    // render top-down; everything else is a single vertically-centered line.
+    let multiline = get_field_flags(doc, id) & FLAG_MULTILINE != 0 || value.contains('\n');
 
-    let escaped = pdf_escape(value);
-    let content =
-        format!("/Tx BMC\nBT\n{da}\n{x_offset:.2} {y_offset:.2} Td\n({escaped}) Tj\nET\nEMC");
+    // Draw with a standard-14 Helvetica (declared in the resources below) — NOT the
+    // field's /DA font. The template's choice fields name "ArialMT", and a Type1 font
+    // with a non-standard BaseFont and no FontDescriptor makes Adobe warn "bad /BBox".
+    let font_ops = format!("/Helv {effective_size:.2} Tf 0 g");
 
-    // Build resources dict with font reference
-    let font_name = parse_font_name_from_da(&da);
-    let resources = if let Some(ref fname) = font_name {
-        let font_obj = if let Some(font_id) = get_acroform_font_resource(doc, fname) {
-            // Use existing font from AcroForm /DR
-            Object::Reference(font_id)
-        } else if let Some(font_id) = find_font_in_existing_ap(doc, id, fname) {
-            // Use font from the field's existing /AP stream resources
-            Object::Reference(font_id)
-        } else {
-            // Create a minimal Type1 font dict for standard fonts
-            Object::Dictionary(Dictionary::from_iter(vec![
-                (b"Type".to_vec(), Object::Name(b"Font".to_vec())),
-                (b"Subtype".to_vec(), Object::Name(b"Type1".to_vec())),
-                (
-                    b"BaseFont".to_vec(),
-                    Object::Name(fname.as_bytes().to_vec()),
-                ),
-            ]))
-        };
-        let font_entry = Dictionary::from_iter(vec![(fname.as_bytes().to_vec(), font_obj)]);
-        Dictionary::from_iter(vec![(b"Font".to_vec(), Object::Dictionary(font_entry))])
+    let content = if multiline {
+        let avail = (width - 2.0 * pad).max(1.0);
+        let leading = effective_size * 1.15;
+        let max_lines = (((height - pad) / leading).floor() as usize).max(1);
+        let mut lines = wrap_text(value, avail, effective_size);
+        lines.truncate(max_lines);
+        let first_baseline = (height - pad - effective_size).max(0.0);
+        let mut ops =
+            format!("/Tx BMC\nBT\n{font_ops}\n{leading:.2} TL\n{pad:.2} {first_baseline:.2} Td\n");
+        for (i, line) in lines.iter().enumerate() {
+            if i > 0 {
+                ops.push_str("T*\n");
+            }
+            ops.push_str(&format!("({}) Tj\n", pdf_escape(line)));
+        }
+        ops.push_str("ET\nEMC");
+        ops
     } else {
-        Dictionary::new()
+        let baseline = {
+            let centered = (height - effective_size) / 2.0;
+            if centered < 0.0 {
+                pad
+            } else {
+                centered
+            }
+        };
+        format!(
+            "/Tx BMC\nBT\n{font_ops}\n{pad:.2} {baseline:.2} Td\n({}) Tj\nET\nEMC",
+            pdf_escape(value)
+        )
     };
+
+    // Self-contained standard Helvetica: standard-14, so it needs no FontDescriptor or
+    // FontBBox and never triggers the "bad /BBox" warning.
+    let mut helvetica = Dictionary::new();
+    helvetica.set("Type", Object::Name(b"Font".to_vec()));
+    helvetica.set("Subtype", Object::Name(b"Type1".to_vec()));
+    helvetica.set("BaseFont", Object::Name(b"Helvetica".to_vec()));
+    let mut fonts = Dictionary::new();
+    fonts.set("Helv", Object::Dictionary(helvetica));
+    let mut resources = Dictionary::new();
+    resources.set("Font", Object::Dictionary(fonts));
 
     // Build the Form XObject stream
     let mut stream_dict = Dictionary::from_iter(vec![
@@ -463,26 +513,19 @@ fn generate_appearance_stream(doc: &mut Document, id: ObjectId, value: &str) {
     let stream = Stream::new(stream_dict, content_bytes);
     let ap_id = doc.add_object(Object::Stream(stream));
 
-    // Set /AP on the field
+    // Set /AP on the field, and point /DA at the same standard font so Adobe's
+    // NeedAppearances rebuild uses Helvetica instead of the unresolved/invalid ArialMT.
     if let Ok(obj) = doc.get_object_mut(id) {
         if let Ok(dict) = obj.as_dict_mut() {
             let ap_dict = Dictionary::from_iter(vec![(b"N".to_vec(), Object::Reference(ap_id))]);
             dict.set("AP", Object::Dictionary(ap_dict));
-        }
-    }
-}
-
-/// Remove or set NeedAppearances to false on the AcroForm.
-fn remove_need_appearances(doc: &mut Document) {
-    let catalog = doc.catalog().expect("No catalog found").clone();
-
-    if let Ok(acroform_ref) = catalog.get(b"AcroForm") {
-        if let Ok(acroform_id) = acroform_ref.as_reference() {
-            if let Ok(obj) = doc.get_object_mut(acroform_id) {
-                if let Ok(dict) = obj.as_dict_mut() {
-                    dict.remove(b"NeedAppearances");
-                }
-            }
+            dict.set(
+                "DA",
+                Object::String(
+                    format!("/Helv {effective_size:.2} Tf 0 g").into_bytes(),
+                    StringFormat::Literal,
+                ),
+            );
         }
     }
 }
@@ -983,7 +1026,7 @@ pub(crate) mod tests {
         );
     }
 
-    // ─── pdf_escape ───
+    // ─── pdf_escape / wrap_text ───
 
     #[test]
     fn pdf_escape_special_chars() {
@@ -992,18 +1035,32 @@ pub(crate) mod tests {
         assert_eq!(pdf_escape("back\\slash"), "back\\\\slash");
     }
 
-    // ─── parse_font_name_from_da / parse_font_size_from_da ───
+    #[test]
+    fn wrap_text_wraps_at_word_boundaries() {
+        // width 60pt, size 10 → ~12 chars/line
+        let lines = wrap_text("the quick brown fox jumps", 60.0, 10.0);
+        assert!(lines.len() >= 2, "should wrap: {lines:?}");
+        // explicit newline forces a break
+        assert_eq!(
+            wrap_text("a\nb", 200.0, 10.0),
+            vec!["a".to_string(), "b".to_string()]
+        );
+        // a word longer than the line is kept intact (never split) — it overflows/clips
+        assert_eq!(
+            wrap_text("supercalifragilistic", 30.0, 10.0),
+            vec!["supercalifragilistic".to_string()]
+        );
+    }
+
+    // ─── parse_font_size_from_da ───
 
     #[test]
-    fn parse_font_name_and_size() {
-        let da = "/Helv 12 Tf 0 g";
-        assert_eq!(parse_font_name_from_da(da), Some("Helv".to_string()));
-        assert_eq!(parse_font_size_from_da(da), Some(12.0));
+    fn parse_font_size() {
+        assert_eq!(parse_font_size_from_da("/Helv 12 Tf 0 g"), Some(12.0));
     }
 
     #[test]
-    fn parse_font_name_none_without_tf() {
-        assert_eq!(parse_font_name_from_da("0 g"), None);
+    fn parse_font_size_none_without_tf() {
         assert_eq!(parse_font_size_from_da("0 g"), None);
     }
 
@@ -1079,47 +1136,21 @@ pub(crate) mod tests {
         );
     }
 
-    // ─── remove_need_appearances ───
-
     #[test]
-    fn remove_need_appearances_removes_flag() {
+    fn fill_pdf_keeps_need_appearances() {
         let (mut doc, ids) = create_test_pdf();
-        set_need_appearances(&mut doc);
-
-        // Verify it was set
-        let acroform = doc.get_object(ids.acroform_id).unwrap();
-        let dict = acroform.as_dict().unwrap();
-        assert_eq!(
-            dict.get(b"NeedAppearances").unwrap(),
-            &Object::Boolean(true)
-        );
-
-        // Now remove it
-        remove_need_appearances(&mut doc);
-
-        let acroform = doc.get_object(ids.acroform_id).unwrap();
-        let dict = acroform.as_dict().unwrap();
-        assert!(
-            dict.get(b"NeedAppearances").is_err(),
-            "NeedAppearances should be removed"
-        );
-    }
-
-    #[test]
-    fn fill_pdf_removes_need_appearances() {
-        let (mut doc, ids) = create_test_pdf();
-        // Pre-set NeedAppearances
-        set_need_appearances(&mut doc);
 
         let mut data = HashMap::new();
         data.insert("Name".to_string(), "Test".to_string());
         fill_pdf(&mut doc, &data);
 
+        // NeedAppearances must stay true so Adobe's form engine rebuilds malformed
+        // template's fields (including checkbox state) on open.
         let acroform = doc.get_object(ids.acroform_id).unwrap();
         let dict = acroform.as_dict().unwrap();
-        assert!(
-            dict.get(b"NeedAppearances").is_err(),
-            "fill_pdf should remove NeedAppearances"
+        assert_eq!(
+            dict.get(b"NeedAppearances").unwrap(),
+            &Object::Boolean(true)
         );
     }
 }
