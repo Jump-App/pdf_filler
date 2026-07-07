@@ -88,11 +88,14 @@ jobs:
         if: contains(matrix.target, 'musl')
         shell: bash
         run: |
-          if ldd "pdf_filler-${{ matrix.target }}" 2>&1 | grep -qE "statically linked|not a dynamic executable"; then
+          # ldd exits nonzero for static binaries on some platforms; capture
+          # output first so pipefail doesn't fail the check spuriously.
+          ldd_output="$(ldd "pdf_filler-${{ matrix.target }}" 2>&1 || true)"
+          if grep -qE "statically linked|not a dynamic executable" <<<"${ldd_output}"; then
             echo "Binary is static"
           else
             echo "Binary is NOT static:" >&2
-            ldd "pdf_filler-${{ matrix.target }}" >&2
+            echo "${ldd_output}" >&2
             exit 1
           fi
 
