@@ -46,6 +46,13 @@ jobs:
             target: x86_64-unknown-linux-gnu
           - runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
+          # musl targets produce fully static binaries (crt-static is the
+          # Rust default for *-musl) that run on both glibc and musl
+          # (Alpine) systems.
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
           - runner: macos-latest
             target: aarch64-apple-darwin
           - runner: macos-15-intel
@@ -61,6 +68,10 @@ jobs:
           toolchain: 1.88.0
           targets: ${{ matrix.target }}
 
+      - name: Install musl toolchain
+        if: contains(matrix.target, 'musl')
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends musl-tools
+
       - name: Restore Rust cache
         uses: Swatinem/rust-cache@v2
         with:
@@ -72,6 +83,18 @@ jobs:
       - name: Prepare release artifact
         shell: bash
         run: cp target/${{ matrix.target }}/release/pdf_filler pdf_filler-${{ matrix.target }}
+
+      - name: Verify musl binary is fully static
+        if: contains(matrix.target, 'musl')
+        shell: bash
+        run: |
+          if ldd "pdf_filler-${{ matrix.target }}" 2>&1 | grep -qE "statically linked|not a dynamic executable"; then
+            echo "Binary is static"
+          else
+            echo "Binary is NOT static:" >&2
+            ldd "pdf_filler-${{ matrix.target }}" >&2
+            exit 1
+          fi
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
